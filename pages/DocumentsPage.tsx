@@ -1,0 +1,2053 @@
+
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { Page, Piece, Database, User } from '../types';
+import { useData } from '../context/DataContext';
+import { useToast } from '../context/ToastContext';
+import { useLanguage } from '../context/LanguageContext';
+import { useConfirm } from '../context/ConfirmContext';
+import PageWrapper from '../components/PageWrapper';
+import Modal from '../components/Modal';
+import AddDocumentForm from '../components/forms/AddDocumentForm';
+import AddLotPieceForm from '../components/forms/AddLotPieceForm';
+import AddOdsForm from '../components/forms/AddOdsForm';
+import AddEngagementForm from '../components/forms/AddEngagementForm';
+import AddPaiementForm from '../components/forms/AddPaiementForm';
+import { formatCurrency } from '../utils/currencyUtils';
+import { isOperationCreator } from '../utils/authUtils';
+import CustomDropdown from '../components/CustomDropdown';
+import ExcelJS from 'exceljs';
+import { Search, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+
+interface DocumentsPageProps {
+    navigate: (page: Page, operationId?: number, extraId?: string) => void;
+    initialOperationId?: number | null;
+    initialPieceId?: string;
+    onGoBack?: () => void;
+    currentUser: User;
+}
+
+const formatCurrencyForExcel = (amount: number | null | undefined) => {
+    if (amount === null || amount === undefined) return '0,00';
+    return new Intl.NumberFormat('ar-DZ', {
+        style: 'decimal',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(amount);
+};
+
+
+const SearchHeader: React.FC<{
+    title: string;
+    isActive: boolean;
+    children: React.ReactNode;
+    tooltip?: string;
+}> = ({ title, isActive, children, tooltip }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    return (
+        <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-center gap-1">
+                <span>{title}</span>
+                <button 
+                    onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
+                    className={`p-0.5 rounded-[20px] bg-blue-100 transition-colors ${isOpen || isActive ? 'bg-blue-300 text-blue-600' : 'hover:bg-blue-200 text-gray-400'}`}
+                    title={tooltip}
+                >
+                    <Search size={10} />
+                </button>
+            </div>
+            {(isOpen || isActive) && children}
+        </div>
+    );
+};
+
+const DocumentRow = React.memo<{
+    piece: any;
+    index: number;
+    isSelected: boolean;
+    isHighlighted: boolean;
+    highlightColor: 'red' | 'amber' | 'blue' | null;
+    onSelect: (piece: any) => void;
+    onNavigate: (type: 'ENG' | 'PAI', piece: any) => void;
+    onAction: (type: 'ENG' | 'PAI', pieceId: number) => void;
+    onNavigateBeneficiary: (beneficiaryId: number) => void;
+    onNavigateStructure: (rubricId: number, pieceOpId?: number) => void;
+    isConcernedWithEngagement: (piece: any) => boolean;
+    isConcernedWithPaiement: (piece: any) => boolean;
+    isViewer: boolean;
+    isChild?: boolean;
+    onNavigateDetails?: (pieceId: number) => void;
+    onEdit?: (piece: any) => void;
+    onDelete?: (piece: any) => void;
+}>(({ 
+    piece, index, isSelected, isHighlighted, highlightColor, 
+    onSelect, onNavigate, onAction, onNavigateBeneficiary, onNavigateStructure,
+    isConcernedWithEngagement, isConcernedWithPaiement, isViewer,
+    isChild = false,
+    onNavigateDetails,
+    onEdit,
+    onDelete
+}) => {
+    const getIcon = () => {
+        if (['صفقة', 'اتفاقية'].includes(piece.NAT_PIECE)) return <i className="font-bold text-sky-600"></i>;
+        if (['وضعية الأشغال', 'وضعية التسبيق الجزافي', 'وضعية التسبيق على التموين', 'فاتورة','حكم قضائي'].includes(piece.NAT_PIECE)) return <i className="text-green-600"></i>;
+        if (piece.NAT_PIECE === 'ملحق') return <i className="text-sky-600"></i>;
+        if (piece.NAT_PIECE === 'قرار فسخ') return <i className="text-red-600"></i>;
+        return <i className="text-gray-600"></i>;
+    };
+
+    return (
+        <tr 
+            id={`piece-row-${piece.ID_PIECE}`}
+            className={`group hover:bg-blue-50 cursor-pointer text-[9px] transition-all duration-200 ${
+                piece.isContextOnly ? 'opacity-55 bg-gray-50/70 border-dashed border-gray-200' : ''
+            } ${
+                piece.isDuplicate 
+                    ? (isSelected ? 'bg-red-200 hover:bg-red-250 text-red-950 ring-2 ring-red-400 font-bold' : 'bg-red-50 hover:bg-red-100/80 text-red-900 border-b border-red-100')
+                    : (isSelected ? 'bg-blue-200 ring-1 ring-inset ring-blue-200' : '')
+            } ${isChild ? 'bg-blue' : ''} ${isHighlighted && !piece.isDuplicate ? (highlightColor === 'red' ? 'bg-red-50 ring-2 ring-red-300' : highlightColor === 'blue' ? 'bg-blue-200 ring-2 ring-blue-300' : 'bg-amber-50 ring-2 ring-amber-300') : ''}`}
+            onClick={() => onSelect(piece)}
+            onDoubleClick={() => onNavigateDetails && onNavigateDetails(piece.ID_PIECE)}
+        >
+            <td className="p-1 text-sky-600 text-right font-mono text-[8px]">{index + 1}</td>
+            <td className="p-1 text-right">
+                <div className={`flex text-right items-center gap-1.5 justify-start ${isChild ? 'pr-5' : ''}`}>
+                    {isChild && (
+                        <i className="bi bi-arrow-return-left text-gray-400 text-[9px] ml-1 select-none"></i>
+                    )}
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onNavigateDetails?.(piece.ID_PIECE);
+                        }}
+                        className="opacity-80 group-hover:opacity-100 hover:bg-sky-100 text-sky-700 hover:text-sky-900 px-1.5 py-0.5 rounded text-[8px] font-bold border border-sky-200 transition-colors flex items-center gap-0.5 shrink-0 cursor-pointer"
+                        title="عرض تفاصيل الوثيقة"
+                    >
+                        <i className="bi bi-eye-fill text-[8px]"></i>
+                        <span>تفاصيل</span>
+                    </button>
+                    <span className="opacity-70 group-hover:opacity-100 transition-opacity">{getIcon()}</span>
+                    <span className={`font-bold ${piece.isDuplicate ? 'text-red-800' : (isSelected ? 'text-blue-700' : 'text-gray-900')} truncate max-w-[200px] text-[10px] `} title={piece.PIECE}>
+                        {piece.PIECE}
+                    </span>
+                </div>
+            </td>
+            <td className="p-1 text-center">
+                {piece.isContextOnly ? (
+                    <span className="inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold bg-gray-100 text-gray-500 border border-gray-200">
+                        {piece.NAT_PIECE} (مرجع)
+                    </span>
+                ) : (
+                    <span className={`inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold ${
+                        piece.isDuplicate ? 'bg-red-200 text-red-800 border border-red-300' :
+                        piece.NAT_PIECE === 'صفقة' ? 'bg-blue-100 text-blue-600' :
+                        piece.NAT_PIECE === 'اتفاقية' ? 'bg-blue-100 text-blue-600' :
+                        piece.NAT_PIECE === 'ملحق' ? 'bg-blue-100 text-blue-600' :
+                        piece.NAT_PIECE === 'وضعية الأشغال' ? 'bg-green-100 text-green-600' :
+                        piece.NAT_PIECE === 'فاتورة' ? 'bg-green-100 text-green-600' :
+                        piece.NAT_PIECE === 'حكم قضائي' ? 'bg-green-100 text-green-600' :
+                        'bg-gray-100 text-gray-600'
+                    }`}>
+                        {piece.NAT_PIECE}
+                    </span>
+                )}
+            </td>
+            <td className="p-1">
+                <div className="flex gap-2 items-center justify-center">
+                    {piece.hasEngagement ? (
+                        <div 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onNavigate('ENG', piece);
+                            }}
+                            className="flex items-center gap-1 bg-blue-50 hover:bg-blue-100 cursor-pointer px-1.5 py-0.5 rounded border border-blue-100 transition-colors" 
+                            title="انتقل إلى الالتزام"
+                        >
+                            <span className="w-1 h-1 rounded-full bg-blue-500 shadow-sm"></span>
+                            <span className="text-[8px] font-bold text-blue-700">ملتزم</span>
+                        </div>
+                    ) : (
+                        !isViewer && isConcernedWithEngagement(piece) && (
+                            <button 
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAction('ENG', piece.ID_PIECE);
+                                }}
+                                className="flex items-center gap-1 bg-amber-50 hover:bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 transition-all font-bold text-[8px] shadow-sm select-none cursor-pointer"
+                                title="إضافة التزام مباشر لهذا المستند"
+                            >
+                                <i className="bi bi-plus-square-fill text-[8px]"></i>
+                                <span>التزام</span>
+                            </button>
+                        )
+                    )}
+                    {piece.hasPaiement ? (
+                        <div 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onNavigate('PAI', piece);
+                            }}
+                            className="flex items-center gap-1 bg-green-50 hover:bg-green-100 cursor-pointer px-1.5 py-0.5 rounded border border-green-100 transition-colors" 
+                            title="انتقل إلى الدفع"
+                        >
+                            <span className="w-1 h-1 rounded-full bg-green-500 shadow-sm"></span>
+                            <span className="text-[8px] font-bold text-green-700">مسدد</span>
+                        </div>
+                    ) : (
+                        !isViewer && isConcernedWithPaiement(piece) && (
+                            <button 
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAction('PAI', piece.ID_PIECE);
+                                }}
+                                className="flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-200 transition-all font-bold text-[8px] shadow-sm select-none cursor-pointer"
+                                title="إضافة دفع مباشر لهذا المستند"
+                             >
+                                <i className="bi bi-plus-circle-fill text-[8px]"></i>
+                                <span>دفع</span>
+                            </button>
+                        )
+                    )}
+                </div>
+            </td>
+            <td 
+                className="p-1 text-center text-blue-600/70 hover:text-blue-800 hover:underline cursor-pointer max-w-[120px] truncate text-[10px] transition-colors" 
+                title={piece.rubricName}
+                onClick={(e) => {
+                    if (!isSelected) {
+                        // Let the click bubble up to the <tr>'s onClick which selects this row, without navigating yet
+                        return;
+                    }
+                    e.stopPropagation();
+                    if (piece.ID_RUBRIQUE) {
+                        onNavigateStructure(piece.ID_RUBRIQUE, piece.ID_OPERATION);
+                    }
+                }}
+            >
+                {piece.rubricName}
+            </td>
+            <td 
+                className="p-1 text-center text-green-600/70 hover:text-green-800 hover:underline cursor-pointer max-w-[120px] truncate text-[9px] transition-colors" 
+                title={piece.beneficiaryName}
+                onClick={(e) => {
+                    e.stopPropagation();
+                    if (piece.ID_BENEFICIAIRE) {
+                        onNavigateBeneficiary(piece.ID_BENEFICIAIRE);
+                    }
+                }}
+            >
+                {piece.beneficiaryName}
+            </td>
+            <td className={`p-1 text-[11px] text-right font-black tracking-tight ${isSelected ? 'text-blue-800' : (piece.MONTANT_PIECE < 0 ? 'text-red-600' : 'text-gray-950')}`}>
+                {formatCurrency(piece.MONTANT_PIECE)}
+            </td>
+            <td className="p-1 text-center" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-center gap-1">
+                    {!isViewer && (
+                        <>
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onEdit?.(piece);
+                                }}
+                                className="p-1 text-yellow-600 hover:text-yellow-800 hover:bg-yellow-100 rounded transition-colors cursor-pointer"
+                                title="تعديل"
+                            >
+                                <i className="bi bi-pencil-fill text-[10px]"></i>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDelete?.(piece);
+                                }}
+                                className="p-1 text-red-600 hover:text-red-800 hover:bg-red-100 rounded transition-colors cursor-pointer"
+                                title="حذف"
+                            >
+                                <i className="bi bi-trash-fill text-[10px]"></i>
+                            </button>
+                        </>
+                    )}
+                </div>
+            </td>
+        </tr>
+    );
+});
+
+const DocumentsPage: React.FC<DocumentsPageProps> = ({ navigate, initialOperationId, initialPieceId, onGoBack, currentUser }) => {
+    const { db, loading, addItem, updateItem, deleteItem, runInTransaction, connectionError, integrityIssues, refreshData } = useData();
+
+    const { showToast } = useToast();
+    const { confirm } = useConfirm();
+    const [isRetrying, setIsRetrying] = useState<boolean>(false);
+
+    const handleRetry = useCallback(async () => {
+        setIsRetrying(true);
+        showToast('جاري إعادة المحاولة والاتصال بـ Supabase...', 'loading');
+        try {
+            await refreshData();
+            showToast('تم تحديث البيانات والاتصال بنجاح', 'success');
+        } catch (error) {
+            console.error("Retry failed:", error);
+            showToast('فشلت محاولة الاتصال مجددًا بقاعدة البيانات', 'error');
+        } finally {
+            setIsRetrying(false);
+        }
+    }, [refreshData, showToast]);
+    const { t } = useLanguage();
+    const [selectedOperationId, setSelectedOperationId] = useState<string>('');
+    const [selectedPieceType, setSelectedPieceType] = useState<string>('');
+    const [selectedStructureDetail, setSelectedStructureDetail] = useState<string>('');
+    const [searchPieceName, setSearchPieceName] = useState<string>('');
+    const [selectedBeneficiaireId, setSelectedBeneficiaireId] = useState<string>('');
+    const [selectedSaiEng, setSelectedSaiEng] = useState<string>('');
+    const [selectedSaiPai, setSelectedSaiPai] = useState<string>('');
+    const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
+    const [isDeleting, setIsDeleting] = useState<boolean>(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const isViewer = currentUser.ROLE === 'viewer';
+
+    const uniquePieceTypes = useMemo(() => {
+        const types = new Set<string>();
+        db.T_PIECE.forEach(p => {
+            if (p.NAT_PIECE) {
+                types.add(p.NAT_PIECE.trim());
+            }
+        });
+        return Array.from(types).sort();
+    }, [db.T_PIECE]);
+
+    const uniqueRubrics = useMemo(() => {
+        const rubricIds = new Set<number>();
+        db.T_PIECE.forEach(p => {
+            if (!selectedOperationId || Number(p.ID_OPERATION) === Number(selectedOperationId)) {
+                if (p.ID_RUBRIQUE) {
+                    rubricIds.add(p.ID_RUBRIQUE);
+                }
+            }
+        });
+        return db.T_RUBRIQUE
+            .filter(r => rubricIds.has(r.ID_RUBRIQUE))
+            .sort((a, b) => a.RUBRIQUE.localeCompare(b.RUBRIQUE));
+    }, [db.T_RUBRIQUE, db.T_PIECE, selectedOperationId]);
+
+    const [modalState, setModalState] = useState<{
+        type: 'DOCUMENT' | 'LOT_PIECE' | 'ODS' | 'ENGAGEMENT' | 'PAIEMENT' | null;
+        data?: any;
+        timestamp?: number;
+    }>({ type: null });
+
+    const [highlightId, setHighlightId] = useState<number | null>(null);
+    const [highlightColor, setHighlightColor] = useState<'red' | 'amber' | 'blue' | null>(null);
+
+    useEffect(() => {
+        if (initialOperationId) {
+            setSelectedOperationId(String(initialOperationId));
+        }
+        if (initialPieceId && !loading) {
+            if (initialPieceId.startsWith('BENEFICIAIRE:')) {
+                const beneficiaryId = initialPieceId.split(':')[1];
+                const bName = db.T_BENEFICIAIRE.find(b => b.ID_BENEFICIAIRE === Number(beneficiaryId))?.BENEFICIAIRE || '';
+                setSelectedBeneficiaireId(bName);
+                setSelectedPiece(null);
+            } else {
+                const [pieceIdStr, color] = initialPieceId.split(':');
+                const pieceId = parseInt(pieceIdStr, 10);
+                
+                const piece = db.T_PIECE.find(p => p.ID_PIECE === pieceId);
+                if (piece) {
+                    setSelectedPiece(piece);
+                    setHighlightId(pieceId);
+                    setHighlightColor(color as any || 'amber');
+                    // Wait for the render then scroll
+                    setTimeout(() => {
+                        const rowId = `piece-row-${pieceId}`;
+                        const row = document.getElementById(rowId);
+                        if (row) {
+                            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                    }, 500);
+                }
+            }
+        }
+    }, [initialOperationId, initialPieceId, db.T_PIECE, db.T_BENEFICIAIRE, loading]);
+
+    // Pagination state
+    const [pageSize, setPageSize] = useState<number | 'all'>(50);
+    const [currentPage, setCurrentPage] = useState<number>(1);
+
+    // Reset to page 1 on filter changes
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [selectedOperationId, selectedPieceType, searchPieceName, selectedBeneficiaireId, selectedStructureDetail, selectedSaiEng, selectedSaiPai]);
+
+    const displayPieces = useMemo(() => {
+        // Pre-create Map indexes for O(1) lookups
+        const beneficiaryMap = new Map(db.T_BENEFICIAIRE.map(b => [b.ID_BENEFICIAIRE, b.BENEFICIAIRE]));
+        const rubricMap = new Map(db.T_RUBRIQUE.map(r => [r.ID_RUBRIQUE, r.RUBRIQUE]));
+        const pieceMap = new Map(db.T_PIECE.map(p => [p.ID_PIECE, p]));
+        const rubriqueOpMap = new Map(db.T_RUBRIQUE_OP.map(r => [`${r.ID_OPERATION}-${r.ID_RUBRIQUE}`, r]));
+        const engagementMap = new Map(db.T_ENGAGEMENT.map(e => [e.ID_PIECE, e]));
+        const engagementPieceIds = new Set(db.T_ENGAGEMENT.map(e => e.ID_PIECE));
+        const paiementPieceIds = new Set(db.T_PAIEMENT.map(p => p.ID_PIECE));
+
+        // Count frequencies of each (NAT_PIECE, PIECE.trim()) for duplicates
+        const duplicateCountMap = new Map<string, number>();
+        const targetNatures = ['صفقة', 'اتفاقية', 'فاتورة', 'حكم قضائي'];
+        db.T_PIECE.forEach(p => {
+            if (p.NAT_PIECE && targetNatures.includes(p.NAT_PIECE)) {
+                const key = `${p.NAT_PIECE.trim()}|||${(p.PIECE || '').trim().toLowerCase()}`;
+                duplicateCountMap.set(key, (duplicateCountMap.get(key) || 0) + 1);
+            }
+        });
+
+        // Pre-calculate sums for rubrics (O(1) piece lookup via pieceMap)
+        const rubConsMap = new Map<string, number>();
+        db.T_ENGAGEMENT.forEach(e => {
+            const p = pieceMap.get(e.ID_PIECE);
+            if (p && p.ID_RUBRIQUE) {
+                const key = `${e.ID_OPERATION}-${p.ID_RUBRIQUE}`;
+                let amt = e.MONTANT_ENG;
+                if (['إلغاء', 'إنخفاض التقييم'].includes(e.NATURE_ENG)) amt = -amt;
+                rubConsMap.set(key, (rubConsMap.get(key) || 0) + amt);
+            }
+        });
+
+        // Pre-calculate CP consumption per operation
+        const cpConsumedMap = new Map<number, number>();
+        db.T_PAIEMENT.forEach(p => {
+            cpConsumedMap.set(p.ID_OPERATION, (cpConsumedMap.get(p.ID_OPERATION) || 0) + p.MONTANT_PAI);
+        });
+
+        const cpTotalMap = new Map<number, number>();
+        db.T_CP.forEach(c => {
+            cpTotalMap.set(c.ID_OPERATION, (cpTotalMap.get(c.ID_OPERATION) || 0) + (c.MONTANT_FINALE_CP ?? c.MONTANT_INITIALE_CP));
+        });
+
+        return db.T_PIECE.filter(piece => {
+            // Check authorization
+            if (currentUser.ROLE !== 'admin' && currentUser.ALLOWED_OPERATIONS) {
+                try {
+                    const allowedOps = JSON.parse(currentUser.ALLOWED_OPERATIONS) as any[];
+                    if (allowedOps.length > 0 && !allowedOps.map(Number).includes(Number(piece.ID_OPERATION))) {
+                        return false;
+                    }
+                } catch (e) {
+                    console.error("Error parsing allowed operations", e);
+                }
+            }
+
+            const operationMatch = !selectedOperationId || Number(piece.ID_OPERATION) === Number(selectedOperationId);
+            const typeMatch = !selectedPieceType || (piece.NAT_PIECE && piece.NAT_PIECE.trim() === selectedPieceType);
+            const nameMatch = !searchPieceName || piece.PIECE.toLowerCase().includes(searchPieceName.toLowerCase());
+            const beneficiaryName = beneficiaryMap.get(piece.ID_BENEFICIAIRE || -1) || '---';
+            const beneficiaryMatch = !selectedBeneficiaireId || beneficiaryName.toLowerCase().includes(selectedBeneficiaireId.toLowerCase());
+            const structureMatch = !selectedStructureDetail || Number(piece.ID_RUBRIQUE) === Number(selectedStructureDetail);
+
+            // Commitment Filter: Exclude irrelevant types when filter is active
+            let saiEngMatch = true;
+            if (selectedSaiEng !== '') {
+                const commitmentTypes = ['مقرر', 'قرار', 'صفقة', 'اتفاقية', 'ملحق', 'قرار فسخ', 'فاتورة', 'مستخرج', 'حكم قضائي'];
+                const isCommitmentDoc = commitmentTypes.some(type => piece.NAT_PIECE.trim() === type);
+                saiEngMatch = isCommitmentDoc && String(!!piece.SAI_ENG) === selectedSaiEng;
+            }
+
+            // Payment Filter: Exclude specific types when filter is active
+            let saiPaiMatch = true;
+            if (selectedSaiPai !== '') {
+                const paymentTypes = ['فاتورة', 'وضعية الأشغال', 'وضعية التسبيق الجزافي', 'وضعية التسبيق على التموين', 'حكم قضائي','رفع اليد عن الضمان'];
+                const isPaymentDoc = paymentTypes.some(type => piece.NAT_PIECE.trim() === type);
+                saiPaiMatch = isPaymentDoc && String(!!piece.SAI_PAI) === selectedSaiPai;
+            }
+
+            return operationMatch && typeMatch && nameMatch && beneficiaryMatch && structureMatch && saiEngMatch && saiPaiMatch;
+        }).sort((a, b) => a.ID_PIECE - b.ID_PIECE)
+        .map(piece => {
+            const bName = beneficiaryMap.get(piece.ID_BENEFICIAIRE || -1) || '---';
+            const rName = piece.ID_RUBRIQUE ? (rubricMap.get(piece.ID_RUBRIQUE) || '---') : '---';
+            const hasEng = engagementPieceIds.has(piece.ID_PIECE);
+            const hasPai = paiementPieceIds.has(piece.ID_PIECE);
+
+            // Pre-calculate concern flags for each row to avoid expensive calculations in render
+            let isConcernedEng = true;
+            if (['وضعية الأشغال', 'وضعية التسبيق الجزافي', 'وضعية التسبيق على التموين'].includes(piece.NAT_PIECE.trim())) {
+                isConcernedEng = false;
+            } else if (piece.ID_RUBRIQUE) {
+                const rubriqueOp = rubriqueOpMap.get(`${piece.ID_OPERATION}-${piece.ID_RUBRIQUE}`);
+                if (!rubriqueOp) isConcernedEng = false;
+                else {
+                    const totalAE = rubriqueOp.MONTANT_FINALE ?? rubriqueOp.MONTANT_INITIALE;
+                    const committed = rubConsMap.get(`${piece.ID_OPERATION}-${piece.ID_RUBRIQUE}`) || 0;
+                    if (piece.MONTANT_PIECE > (totalAE - committed) + 0.01) isConcernedEng = false;
+                }
+            }
+
+            let isConcernedPai = true;
+            if (['مقرر', 'صفقة', 'اتفاقية', 'ملحق', 'قرار فسخ', 'مستخرج'].includes(piece.NAT_PIECE.trim()) || piece.PIECE.includes('التكفل بباقي رخصة البرنامج')) {
+                isConcernedPai = false;
+            } else {
+                if (['فاتورة', 'حكم قضائي'].includes(piece.NAT_PIECE.trim())) {
+                    const eng = engagementMap.get(piece.ID_PIECE);
+                    if (!eng || !eng.N_VISA_CB) isConcernedPai = false;
+                }
+                if (isConcernedPai) {
+                    const totalCP = cpTotalMap.get(piece.ID_OPERATION) || 0;
+                    const consumed = cpConsumedMap.get(piece.ID_OPERATION) || 0;
+                    if (piece.MONTANT_PIECE > (totalCP - consumed) + 0.01) isConcernedPai = false;
+                }
+            }
+
+            const pieceKey = `${piece.NAT_PIECE?.trim() || ''}|||${(piece.PIECE || '').trim().toLowerCase()}`;
+            const isDuplicate = targetNatures.includes(piece.NAT_PIECE) && (duplicateCountMap.get(pieceKey) || 0) > 1;
+
+            return {
+                ...piece,
+                beneficiaryName: bName,
+                rubricName: rName,
+                hasEngagement: hasEng,
+                hasPaiement: hasPai,
+                isConcernedEng,
+                isConcernedPai,
+                isDuplicate
+            };
+        });
+    }, [db.T_PIECE, db.T_BENEFICIAIRE, db.T_RUBRIQUE, db.T_ENGAGEMENT, db.T_PAIEMENT, db.T_RUBRIQUE_OP, db.T_CP, selectedOperationId, selectedPieceType, searchPieceName, selectedBeneficiaireId, selectedStructureDetail, selectedSaiEng, selectedSaiPai, currentUser.ROLE, currentUser.ALLOWED_OPERATIONS]);
+
+    const flattenedRows = useMemo(() => {
+        const rows: { type: 'operation' | 'piece' | 'totals'; key: string; data?: any; isChild?: boolean; index?: number }[] = [];
+        let pieceIndex = 0;
+
+        if (displayPieces.length === 0) return [];
+
+        const operationMap = new Map(db.T_OPERATION.map(o => [o.ID_OPERATION, o]));
+        const beneficiaryMap = new Map(db.T_BENEFICIAIRE.map(b => [b.ID_BENEFICIAIRE, b.BENEFICIAIRE]));
+        const rubricMap = new Map(db.T_RUBRIQUE.map(r => [r.ID_RUBRIQUE, r.RUBRIQUE]));
+        const engagementPieceIds = new Set(db.T_ENGAGEMENT.map(e => e.ID_PIECE));
+        const paiementPieceIds = new Set(db.T_PAIEMENT.map(p => p.ID_PIECE));
+
+        // Group main contracts by operation
+        const mainContractsByOp = new Map<number, Piece[]>();
+        db.T_PIECE.forEach(p => {
+            if (['صفقة', 'اتفاقية'].includes(p.NAT_PIECE)) {
+                let list = mainContractsByOp.get(p.ID_OPERATION);
+                if (!list) {
+                    list = [];
+                    mainContractsByOp.set(p.ID_OPERATION, list);
+                }
+                list.push(p);
+            }
+        });
+
+        // Group displayPieces by operation
+        const opIds = Array.from(new Set(displayPieces.map(p => p.ID_OPERATION)));
+
+        // Sort operation IDs by N_OPERATION
+        const sortedOpIds = opIds.sort((a, b) => {
+            const opA = operationMap.get(a);
+            const opB = operationMap.get(b);
+            if (!opA && !opB) return 0;
+            if (!opA) return 1;
+            if (!opB) return -1;
+            return opA.N_OPERATION.localeCompare(opB.N_OPERATION);
+        });
+
+        sortedOpIds.forEach(opId => {
+            const originalOperation = operationMap.get(opId);
+            const operation = originalOperation || {
+                ID_OPERATION: opId,
+                N_OPERATION: '⚠️ وثائق يتيمة (علاقة مكسورة)',
+                INT_OPERATION: `تنبيه: ترتبط هذه الوثائق بمعرّف عملية (ID_OPERATION: ${opId}) غير متواجد في قاعدة البيانات T_OPERATION`,
+                N_OPERATION_ANCIEN: null,
+                ID_CATEGORIE: -1,
+                ID_SCATEGORIE: null,
+                status: 'جارية'
+            } as any;
+            const opFilteredPieces = displayPieces.filter(p => p.ID_OPERATION === opId);
+
+            // Push operation header row
+            rows.push({
+                type: 'operation',
+                key: `op-header-${opId}`,
+                data: operation
+            });
+
+            // Find main contracts for this operation
+            const mainContractsInOp = mainContractsByOp.get(opId) || [];
+            const handledPieceIds = new Set<number>();
+
+            mainContractsInOp.forEach(contract => {
+                const filteredChildren = opFilteredPieces.filter(p => p.ID_PIECE_INIT === contract.ID_PIECE);
+                const contractInFiltered = opFilteredPieces.find(p => p.ID_PIECE === contract.ID_PIECE);
+
+                if (contractInFiltered || filteredChildren.length > 0) {
+                    let contractObjToRender = contractInFiltered;
+
+                    if (!contractObjToRender) {
+                        const bName = beneficiaryMap.get(contract.ID_BENEFICIAIRE || -1) || '---';
+                        const rName = contract.ID_RUBRIQUE ? (rubricMap.get(contract.ID_RUBRIQUE) || '---') : '---';
+                        const hasEng = engagementPieceIds.has(contract.ID_PIECE);
+                        const hasPai = paiementPieceIds.has(contract.ID_PIECE);
+
+                        contractObjToRender = {
+                            ...contract,
+                            beneficiaryName: bName,
+                            rubricName: rName,
+                            hasEngagement: hasEng,
+                            hasPaiement: hasPai,
+                            isConcernedEng: false,
+                            isConcernedPai: false,
+                            isDuplicate: false,
+                            isContextOnly: true
+                        } as any;
+                    } else {
+                        handledPieceIds.add(contract.ID_PIECE);
+                    }
+
+                    rows.push({
+                        type: 'piece',
+                        key: `piece-${contract.ID_PIECE}`,
+                        data: contractObjToRender,
+                        isChild: false,
+                        index: pieceIndex++
+                    });
+
+                    filteredChildren.forEach(child => {
+                        rows.push({
+                            type: 'piece',
+                            key: `piece-${child.ID_PIECE}`,
+                            data: child,
+                            isChild: true,
+                            index: pieceIndex++
+                        });
+                        handledPieceIds.add(child.ID_PIECE);
+                    });
+                }
+            });
+
+            const standalonePieces = opFilteredPieces.filter(p => !handledPieceIds.has(p.ID_PIECE));
+            standalonePieces.forEach(piece => {
+                rows.push({
+                    type: 'piece',
+                    key: `piece-${piece.ID_PIECE}`,
+                    data: piece,
+                    isChild: false,
+                    index: pieceIndex++
+                });
+            });
+
+            const commitmentTypes = ['قرار', 'صفقة', 'اتفاقية', 'ملحق', 'قرار فسخ', 'فاتورة','حكم قضائي'];
+            const paymentTypes = ['فاتورة', 'وضعية الأشغال', 'وضعية التسبيق الجزافي', 'وضعية التسبيق على التموين','حكم قضائي'];
+
+            const totalCommitment = opFilteredPieces
+                .filter(p => p.NAT_PIECE && commitmentTypes.includes(p.NAT_PIECE.trim()))
+                .reduce((sum, p) => sum + (p.MONTANT_PIECE || 0), 0);
+
+            const totalPayment = opFilteredPieces
+                .filter(p => p.NAT_PIECE && paymentTypes.includes(p.NAT_PIECE.trim()))
+                .reduce((sum, p) => sum + (p.MONTANT_PIECE || 0), 0);
+
+            rows.push({
+                type: 'totals',
+                key: `totals-${opId}`,
+                data: {
+                    totalCommitment,
+                    totalPayment,
+                    opId
+                }
+            });
+        });
+
+        return rows;
+    }, [displayPieces, db.T_PIECE, db.T_OPERATION, db.T_BENEFICIAIRE, db.T_RUBRIQUE, db.T_ENGAGEMENT, db.T_PAIEMENT]);
+
+    // Pagination calculations
+    const totalRows = flattenedRows.length;
+    const totalPages = pageSize === 'all' ? 1 : Math.ceil(totalRows / (pageSize as number)) || 1;
+    const safeCurrentPage = Math.min(Math.max(currentPage, 1), totalPages);
+
+    const lastAutoJumpedPieceIdRef = useRef<number | null>(null);
+
+    // Auto-jump to page containing highlighted document (only once when highlightId changes)
+    useEffect(() => {
+        if (highlightId && flattenedRows.length > 0 && pageSize !== 'all') {
+            if (lastAutoJumpedPieceIdRef.current !== highlightId) {
+                const index = flattenedRows.findIndex(r => r.type === 'piece' && r.data?.ID_PIECE === highlightId);
+                if (index !== -1) {
+                    const pageNum = Math.floor(index / (pageSize as number)) + 1;
+                    setCurrentPage(pageNum);
+                    lastAutoJumpedPieceIdRef.current = highlightId;
+                }
+            }
+        } else if (!highlightId) {
+            lastAutoJumpedPieceIdRef.current = null;
+        }
+    }, [highlightId, flattenedRows, pageSize]);
+
+    const paginatedRows = useMemo(() => {
+        if (pageSize === 'all') return flattenedRows;
+        const start = (safeCurrentPage - 1) * (pageSize as number);
+        return flattenedRows.slice(start, start + (pageSize as number));
+    }, [flattenedRows, safeCurrentPage, pageSize]);
+
+    const renderPaginationControls = () => {
+        if (flattenedRows.length === 0) return null;
+        const startIdx = pageSize === 'all' ? 1 : (safeCurrentPage - 1) * (pageSize as number) + 1;
+        const endIdx = pageSize === 'all' ? totalRows : Math.min(safeCurrentPage * (pageSize as number), totalRows);
+
+        return (
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-50 border-y border-blue-200 text-xs select-none">
+                <div className="flex items-center gap-3">
+                    <span className="text-gray-700 font-medium text-[11px]">
+                        عرض <span className="font-bold text-blue-700">{startIdx}</span> إلى <span className="font-bold text-blue-700">{endIdx}</span> من أصل <span className="font-bold text-gray-900">{totalRows}</span> صف
+                    </span>
+                    <div className="flex items-center gap-1.5 border-r pr-3 border-gray-300">
+                        <label className="text-gray-600 font-semibold text-[11px]">عدد الصفوف بالصفحة:</label>
+                        <select
+                            value={pageSize}
+                            onChange={(e) => {
+                                const val = e.target.value === 'all' ? 'all' : Number(e.target.value);
+                                setPageSize(val);
+                                setCurrentPage(1);
+                            }}
+                            className="h-6 px-1.5 bg-white border border-gray-300 rounded text-[11px] font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                            <option value={25}>25</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                            <option value={200}>200</option>
+                            <option value="all">الكل ({totalRows})</option>
+                        </select>
+                    </div>
+                </div>
+
+                {pageSize !== 'all' && totalPages > 1 && (
+                    <div className="flex items-center gap-1">
+                        <button
+                            type="button"
+                            onClick={(e) => { e.preventDefault(); setCurrentPage(1); }}
+                            disabled={safeCurrentPage === 1}
+                            className="p-1 rounded border bg-white hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-white text-gray-700 transition cursor-pointer disabled:cursor-not-allowed"
+                            title="الصفحة الأولى"
+                        >
+                            <ChevronsRight size={14} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={(e) => { e.preventDefault(); setCurrentPage(prev => Math.max(prev - 1, 1)); }}
+                            disabled={safeCurrentPage === 1}
+                            className="p-1 rounded border bg-white hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-white text-gray-700 transition cursor-pointer disabled:cursor-not-allowed"
+                            title="الصفحة السابقة"
+                        >
+                            <ChevronRight size={14} />
+                        </button>
+
+                        <div className="flex items-center px-1.5 gap-1">
+                            <span className="text-gray-600 text-[11px]">صفحة</span>
+                            <input
+                                type="number"
+                                min={1}
+                                max={totalPages}
+                                value={safeCurrentPage}
+                                onChange={(e) => {
+                                    const p = parseInt(e.target.value, 10);
+                                    if (!isNaN(p) && p >= 1 && p <= totalPages) {
+                                        setCurrentPage(p);
+                                    }
+                                }}
+                                className="w-11 h-6 text-center border border-gray-300 rounded font-bold text-blue-700 text-[11px] outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                            <span className="text-gray-600 text-[11px]">من {totalPages}</span>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={(e) => { e.preventDefault(); setCurrentPage(prev => Math.min(prev + 1, totalPages)); }}
+                            disabled={safeCurrentPage === totalPages}
+                            className="p-1 rounded border bg-white hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-white text-gray-700 transition cursor-pointer disabled:cursor-not-allowed"
+                            title="الصفحة التالية"
+                        >
+                            <ChevronLeft size={14} />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={(e) => { e.preventDefault(); setCurrentPage(totalPages); }}
+                            disabled={safeCurrentPage === totalPages}
+                            className="p-1 rounded border bg-white hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-white text-gray-700 transition cursor-pointer disabled:cursor-not-allowed"
+                            title="الصفحة الأخيرة"
+                        >
+                            <ChevronsLeft size={14} />
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const remainingCPForSelectedOp = useMemo(() => {
+        if (!selectedOperationId) return null;
+        const opId = parseInt(selectedOperationId, 10);
+        
+        // Sum all CP allocations for this operation
+        const totalCP = db.T_CP
+            .filter(c => c.ID_OPERATION === opId)
+            .reduce((sum, c) => sum + (c.MONTANT_FINALE_CP ?? c.MONTANT_INITIALE_CP), 0);
+        
+        // Sum all payments made for this operation
+        const consumedCP = db.T_PAIEMENT
+            .filter(p => p.ID_OPERATION === opId)
+            .reduce((sum, p) => sum + p.MONTANT_PAI, 0);
+
+        return totalCP - consumedCP;
+    }, [selectedOperationId, db.T_CP, db.T_PAIEMENT]);
+
+    const remainingAEForSelectedOp = useMemo(() => {
+        if (!selectedOperationId) return null;
+        const opId = parseInt(selectedOperationId, 10);
+
+        // Sum all AE allocations for this operation
+        const totalAE = db.T_RUBRIQUE_OP
+            .filter(r => r.ID_OPERATION === opId)
+            .reduce((sum, r) => sum + (r.MONTANT_FINALE ?? r.MONTANT_INITIALE), 0);
+
+        // Sum all engagements for this operation
+        const totalEngaged = db.T_ENGAGEMENT
+            .filter(e => e.ID_OPERATION === opId)
+            .reduce((sum, e) => {
+                if (['التزام', 'ملحق', 'فاتورة', 'قرار فسخ','حكم قضائي'].includes(e.NATURE_ENG)) {
+                    return sum + e.MONTANT_ENG;
+                }
+                if (e.NATURE_ENG === 'سحب' || e.NATURE_ENG === 'فسخ'){
+                    return sum + (e.MONTANT_ENG < 0 ? e.MONTANT_ENG : -e.MONTANT_ENG);
+                }
+                return sum;
+            }, 0);
+
+        return totalAE - totalEngaged;
+    }, [selectedOperationId, db.T_RUBRIQUE_OP, db.T_ENGAGEMENT]);
+
+    const associatedLotPieces = useMemo(() => {
+        if (!selectedPiece) return [];
+        return db.T_LOT_PIECE.filter(lp => lp.ID_PIECE === selectedPiece.ID_PIECE);
+    }, [selectedPiece, db.T_LOT_PIECE]);
+
+    const associatedLotsData = useMemo(() => {
+        return associatedLotPieces.map(lp => {
+            const lotInfo = db.T_LOT_OPERATION.find(lot => lot.ID_LOT === lp.ID_LOT);
+            if (!lotInfo) return null;
+            return {
+                ...lotInfo,
+                ID_LOT_PIECE: lp.ID_LOT_PIECE,
+                DELAI_EX_JOURS: lp.DELAI_EX_JOURS // Include Lot-specific duration
+            };
+        }).filter((item): item is NonNullable<typeof item> => item !== null);
+    }, [associatedLotPieces, db.T_LOT_OPERATION]);
+
+    const associatedLotObjects = useMemo(() => {
+        return associatedLotsData.map(l => ({ 
+            ID_LOT: l.ID_LOT, 
+            N_LOT: l.N_LOT, 
+            INTITULE_LOT: l.INTITULE_LOT,
+            ID_OPERATION: l.ID_OPERATION,
+            MONTANT_INITIALE_LOT: l.MONTANT_INITIALE_LOT,
+            MONTANT_FINALE_LOT: l.MONTANT_FINALE_LOT,
+            ATTRIBUER: l.ATTRIBUER
+        }));
+    }, [associatedLotsData]);
+
+    const associatedOds = useMemo(() => {
+        if (!selectedPiece) return [];
+        return db.T_ODS.filter(ods => ods.ID_PIECE === selectedPiece.ID_PIECE);
+    }, [selectedPiece, db.T_ODS]);
+
+
+    const operationOptions = useMemo(() => {
+        let ops = db.T_OPERATION;
+        if (currentUser.ROLE !== 'admin' && currentUser.ALLOWED_OPERATIONS) {
+            try {
+                const allowedOps = JSON.parse(currentUser.ALLOWED_OPERATIONS) as any[];
+                if (allowedOps.length > 0) {
+                    ops = ops.filter(op => allowedOps.map(Number).includes(Number(op.ID_OPERATION)));
+                }
+            } catch (e) {
+                console.error("Error parsing allowed operations", e);
+            }
+        }
+        return ops.map(op => ({ value: String(op.ID_OPERATION), label: op.INT_OPERATION }));
+    }, [db.T_OPERATION, currentUser]);
+
+
+
+    const dataForEngagementForm = useMemo(() => {
+        if (modalState.type !== 'ENGAGEMENT' || !modalState.data?.defaultPieceId) return null;
+        
+        let piece = db.T_PIECE.find(p => p.ID_PIECE === modalState.data.defaultPieceId);
+        if (!piece && modalState.data.defaultPiece) {
+            piece = modalState.data.defaultPiece;
+        }
+
+        if (!piece) return null;
+        const opId = piece.ID_OPERATION;
+
+        let opPieces = db.T_PIECE.filter(p => p.ID_OPERATION === opId);
+        if (!opPieces.find(p => p.ID_PIECE === piece!.ID_PIECE)) {
+            opPieces = [...opPieces, piece];
+        }
+
+        return {
+            opId,
+            pieces: opPieces,
+            rubriqueOps: db.T_RUBRIQUE_OP.filter(r => r.ID_OPERATION === opId).sort((a,b) => a.ID_RUBRIQUE_OP - b.ID_RUBRIQUE_OP),
+            engagements: db.T_ENGAGEMENT.filter(e => e.ID_OPERATION === opId),
+        }
+    }, [modalState, db]);
+
+    const dataForPaiementForm = useMemo(() => {
+        if (modalState.type !== 'PAIEMENT' || !modalState.data?.defaultPieceId) return null;
+        
+        let piece = db.T_PIECE.find(p => p.ID_PIECE === modalState.data.defaultPieceId);
+        if (!piece && modalState.data.defaultPiece) {
+            piece = modalState.data.defaultPiece;
+        }
+
+        if (!piece) return null;
+        const opId = piece.ID_OPERATION;
+
+        let opPieces = db.T_PIECE.filter(p => p.ID_OPERATION === opId);
+        if (!opPieces.find(p => p.ID_PIECE === piece!.ID_PIECE)) {
+            opPieces = [...opPieces, piece];
+        }
+
+        return {
+            opId,
+            pieces: opPieces,
+            engagements: db.T_ENGAGEMENT.filter(e => e.ID_OPERATION === opId),
+            paiements: db.T_PAIEMENT.filter(p => p.ID_OPERATION === opId),
+        }
+    }, [modalState, db]);
+
+
+    const checkPermission = (operationId: number) => {
+        if (isViewer) return false;
+        const operation = db.T_OPERATION.find(op => op.ID_OPERATION === operationId);
+        if (!operation) return false;
+        return isOperationCreator(operation.CREATED_BY, currentUser) || currentUser.ROLE === 'admin';
+    };
+
+    const handleSave = async (
+        table: keyof Database,
+        data: any,
+        idField: string
+    ) => {
+        let opId = data.ID_OPERATION;
+        
+        if (!opId && data.ID_PIECE) {
+            const piece = db.T_PIECE.find(p => p.ID_PIECE === data.ID_PIECE);
+            if (piece) opId = piece.ID_OPERATION;
+        }
+
+        if (opId && !checkPermission(opId)) {
+            alert('ليس لديك صلاحية التعديل على هذه العملية.');
+            return;
+        }
+
+        // --- Proactive Foreign Key Integrity Checks ---
+        if (table === 'T_PIECE') {
+            const opExists = db.T_OPERATION.some(op => Number(op.ID_OPERATION) === Number(data.ID_OPERATION));
+            if (!data.ID_OPERATION || !opExists) {
+                alert('خطأ في سلامة العلاقات: لا يمكن ربط الوثيقة بمهام أو عملية غير صالحة أو غير موجودة بمخزن البيانات.');
+                return;
+            }
+            if (data.ID_BENEFICIAIRE && data.NAT_PIECE !== 'مقرر') {
+                const benExists = db.T_BENEFICIAIRE.some(b => Number(b.ID_BENEFICIAIRE) === Number(data.ID_BENEFICIAIRE));
+                if (!benExists) {
+                    alert('خطأ في سلامة العلاقات: المستفيد المحدد غير موجود في قاعدة البيانات.');
+                    return;
+                }
+            }
+            if (data.ID_SCATEGORIE) {
+                const scatExists = db.T_SCATEGORIE.some(s => Number(s.ID_SCATEGORIE) === Number(data.ID_SCATEGORIE));
+                if (!scatExists) {
+                    alert('خطأ في سلامة العلاقات: الصنف الفرعي المحدد غير موجود في قاعدة البيانات.');
+                    return;
+                }
+            }
+            if (data.ID_RUBRIQUE) {
+                const rubExists = db.T_RUBRIQUE.some(r => Number(r.ID_RUBRIQUE) === Number(data.ID_RUBRIQUE));
+                if (!rubExists) {
+                    alert('خطأ في سلامة العلاقات: تفصيل الهيكلة المحدد غير موجود في قاعدة البيانات.');
+                    return;
+                }
+            }
+            if (data.ID_PIECE_INIT) {
+                const parentExists = db.T_PIECE.some(p => Number(p.ID_PIECE) === Number(data.ID_PIECE_INIT));
+                if (!parentExists) {
+                    alert('خطأ في سلامة العلاقات: الوثيقة الأصلية المرتبط بها غير موجودة في قاعدة البيانات.');
+                    return;
+                }
+            }
+        }
+
+        if (table === 'T_ENGAGEMENT') {
+            const opExists = db.T_OPERATION.some(op => Number(op.ID_OPERATION) === Number(data.ID_OPERATION));
+            if (!data.ID_OPERATION || !opExists) {
+                alert('خطأ في سلامة العلاقات: العملية المرتبطة بالالتزام غير موجودة.');
+                return;
+            }
+            const pieceExists = db.T_PIECE.some(p => Number(p.ID_PIECE) === Number(data.ID_PIECE));
+            if (!data.ID_PIECE || !pieceExists) {
+                alert('خطأ في سلامة العلاقات: الوثيقة المرتبطة بالالتزام غير موجودة.');
+                return;
+            }
+        }
+
+        if (table === 'T_PAIEMENT') {
+            const opExists = db.T_OPERATION.some(op => Number(op.ID_OPERATION) === Number(data.ID_OPERATION));
+            if (!data.ID_OPERATION || !opExists) {
+                alert('خطأ في سلامة العلاقات: العملية المرتبطة بالدفع غير موجودة.');
+                return;
+            }
+            const pieceExists = db.T_PIECE.some(p => Number(p.ID_PIECE) === Number(data.ID_PIECE));
+            if (!data.ID_PIECE || !pieceExists) {
+                alert('خطأ في سلامة العلاقات: الوثيقة المرتبطة بالدفع غير موجودة.');
+                return;
+            }
+        }
+
+        try {
+            if (data[idField]) {
+                await updateItem(table, data[idField], data);
+                showToast('تم التعديل بنجاح', 'success');
+            } else {
+                const nwItem = await addItem(table, data);
+                showToast('تمت الإضافة بنجاح', 'success');
+                if (nwItem && table === 'T_PIECE') {
+                    if (nwItem.ID_OPERATION) {
+                        setSelectedOperationId(String(nwItem.ID_OPERATION));
+                        setSelectedPieceType('');
+                        setSearchPieceName('');
+                        setSelectedBeneficiaireId('');
+                        setSelectedStructureDetail('');
+                        setSelectedSaiEng('');
+                        setSelectedSaiPai('');
+                        setSelectedPiece(nwItem);
+                        setHighlightId(nwItem.ID_PIECE);
+                        setHighlightColor('amber');
+                        setTimeout(() => {
+                            const rowId = `piece-row-${nwItem.ID_PIECE}`;
+                            const row = document.getElementById(rowId);
+                            if (row) {
+                                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                        }, 500);
+                    }
+                }
+            }
+            setModalState({ type: null });
+        } catch {
+            showToast('حدث خطأ أثناء الحفظ', 'error');
+        }
+    };
+
+    const handleSaveLotPiece = async (data: any) => {
+        const piece = db.T_PIECE.find(p => p.ID_PIECE === data.ID_PIECE);
+        if (piece && !checkPermission(piece.ID_OPERATION)) {
+            alert('ليس لديك صلاحية التعديل على هذه العملية.');
+            return;
+        }
+
+        if (data.ID_LOT) {
+            const existingLink = db.T_LOT_PIECE.find(lp => lp.ID_LOT === data.ID_LOT && lp.ID_LOT_PIECE !== data.ID_LOT_PIECE);
+            if (existingLink) {
+                alert('هذه الحصة مرتبطة بالفعل بوثيقة أخرى أو بنفس الوثيقة.');
+                return;
+            }
+        }
+
+        try {
+            await handleSave('T_LOT_PIECE', data, 'ID_LOT_PIECE');
+            if (data.ID_LOT) {
+                const lot = db.T_LOT_OPERATION.find(l => l.ID_LOT === data.ID_LOT);
+                if (lot) {
+                    await updateItem('T_LOT_OPERATION', lot.ID_LOT, { ...lot, ATTRIBUER: true });
+                }
+            }
+        } catch {
+            showToast('حدث خطأ أثناء ربط الحصة', 'error');
+        }
+    };
+
+    const handleDelete = async (table: keyof Database, id: number | null, idField: string) => {
+        if (id === null || isViewer || isDeleting) return;
+
+        let opId: number | undefined;
+        
+        if (table === 'T_PIECE') {
+            const piece = db.T_PIECE.find(p => p.ID_PIECE === id);
+            opId = piece?.ID_OPERATION;
+        } else if (table === 'T_LOT_PIECE') {
+            const lp = db.T_LOT_PIECE.find(l => l.ID_LOT_PIECE === id);
+            const piece = lp ? db.T_PIECE.find(p => p.ID_PIECE === lp.ID_PIECE) : null;
+            opId = piece?.ID_OPERATION;
+        } else if (table === 'T_ODS') {
+            const ods = db.T_ODS.find(o => o.ID_ODS === id);
+            const piece = ods ? db.T_PIECE.find(p => p.ID_PIECE === ods.ID_PIECE) : null;
+            opId = piece?.ID_OPERATION;
+        }
+
+        if (opId && !checkPermission(opId)) {
+            alert('ليس لديك صلاحية الحذف في هذه العملية.');
+            return;
+        }
+
+        const confirmed = await confirm('هل أنت متأكد أنك تريد حذف هذا العنصر؟');
+        if (confirmed) {
+            setIsDeleting(true);
+            showToast('جاري الحذف...', 'loading');
+            try {
+                if (table === 'T_LOT_PIECE' && id) {
+                    const lp = db.T_LOT_PIECE.find(l => l.ID_LOT_PIECE === id);
+                    if (lp) {
+                        const lotId = lp.ID_LOT;
+                        await deleteItem(table, id);
+                        const remainingLinks = db.T_LOT_PIECE.filter(l => l.ID_LOT === lotId && l.ID_LOT_PIECE !== id);
+                        if (remainingLinks.length === 0) {
+                            const lot = db.T_LOT_OPERATION.find(l => l.ID_LOT === lotId);
+                            if (lot) {
+                                await updateItem('T_LOT_OPERATION', lot.ID_LOT, { ...lot, ATTRIBUER: false });
+                            }
+                        }
+                    } else {
+                        await deleteItem(table, id);
+                    }
+                } else {
+                    await deleteItem(table, id);
+                }
+                showToast('تم الحذف بنجاح', 'success');
+                if (idField === 'ID_PIECE') setSelectedPiece(null);
+            } catch (error) {
+                console.error("Delete failed", error);
+                showToast('حدث خطأ أثناء الحذف', 'error');
+            } finally {
+                setIsDeleting(false);
+            }
+        }
+    };
+
+    const handleCleanOrphanedItem = async (table: keyof Database, id: number) => {
+        if (isViewer || isDeleting) return;
+        const confirmed = await confirm('هل أنت متأكد من رغبتك في حذف هذا العنصر اليتيم لإصلاح السلامة المرجعية للداتابيز؟');
+        if (confirmed) {
+            setIsDeleting(true);
+            try {
+                showToast('جاري إصلاح البيانات...', 'loading');
+                await deleteItem(table, id);
+                showToast('تم حذف العنصر اليتيم وإصلاح قاعدة البيانات بنجاح', 'success');
+            } catch (error) {
+                console.error("Failed to clean orphaned item", error);
+                showToast('حدث خطأ أثناء محاولة حذف العنصر', 'error');
+            } finally {
+                setIsDeleting(false);
+            }
+        }
+    };
+
+    const handleCleanAllOrphanedEngagements = async () => {
+        if (!integrityIssues || isViewer || isDeleting) return;
+        const count = integrityIssues.brokenEngagements.length;
+        const confirmed = await confirm(`هل أنت متأكد من رغبتك في حذف جميع الالتزامات اليتامى (${count}) لإعادة السلامة المرجعية؟`);
+        if (confirmed) {
+            setIsDeleting(true);
+            try {
+                showToast('جاري حذف الالتزامات اليتامى...', 'loading');
+                for (const item of integrityIssues.brokenEngagements) {
+                    await deleteItem('T_ENGAGEMENT', item.id_engagement);
+                }
+                showToast('تم حذف الالتزامات اليتامى بنجاح واستعادة سلامة البيانات', 'success');
+            } catch (error) {
+                console.error("Failed to clean all orphaned engagements", error);
+                showToast('حدث خطأ أثناء محاولة الحذف الجماعي', 'error');
+            } finally {
+                setIsDeleting(false);
+            }
+        }
+    };
+    
+    const allLotsForOperation = useMemo(() => {
+        if (!selectedPiece) return [];
+        return db.T_LOT_OPERATION.filter(lot => lot.ID_OPERATION === selectedPiece.ID_OPERATION);
+    }, [selectedPiece, db.T_LOT_OPERATION]);
+
+    const alreadyAssociatedLotIds = useMemo(() => {
+        return db.T_LOT_PIECE.map(lp => lp.ID_LOT);
+    }, [db.T_LOT_PIECE]);
+
+    const handleSelectPiece = useCallback((piece: Piece) => {
+        setSelectedPiece(piece);
+        setHighlightId(null);
+    }, []);
+
+
+
+    const handleExport = async () => {
+        if (flattenedRows.length === 0) {
+            alert('لا توجد بيانات للتصدير.');
+            return;
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('الوثائق');
+        worksheet.views = [{ rightToLeft: true }];
+
+        // Define columns
+        worksheet.columns = [
+            { header: '#', key: 'index', width: 6 },
+            { header: t('col.document'), key: 'document', width: 45 },
+            { header: 'الطبيعة', key: 'nature', width: 18 },
+            { header: 'الحالة', key: 'status', width: 15 },
+            { header: 'تفصيل الهيكلة', key: 'structure', width: 25 },
+            { header: t('col.beneficiary'), key: 'beneficiary', width: 35 },
+            { header: t('col.amount'), key: 'amount', width: 22 }
+        ];
+
+        // Format and style headers (Row 1)
+        const headerRow = worksheet.getRow(1);
+        headerRow.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+        headerRow.height = 25;
+        headerRow.eachCell((cell) => {
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF0B72AA' } // Brand blue / sky-700 equivalent
+            };
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            cell.border = {
+                top: { style: 'thin', color: { argb: 'FFD9D9D9' } },
+                bottom: { style: 'medium', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FFD9D9D9' } },
+                right: { style: 'thin', color: { argb: 'FFD9D9D9' } }
+            };
+        });
+
+        // Loop through flattenedRows to build the Excel content
+        for (const row of flattenedRows) {
+            if (row.type === 'operation') {
+                const opt = row.data;
+                const opText = `العملية: ${opt?.N_OPERATION} - ${opt?.INT_OPERATION}`;
+                const addedRow = worksheet.addRow({ index: opText });
+                
+                // Merge columns A to G (1 to 7) for operation title
+                worksheet.mergeCells(addedRow.number, 1, addedRow.number, 7);
+                
+                addedRow.height = 24;
+                const cell = addedRow.getCell(1);
+                cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF0F172A' } };
+                cell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FFEBF5FF' } // very light blue bg (blue-50)
+                };
+                cell.alignment = { horizontal: 'right', vertical: 'middle' };
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                    bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                    left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                    right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+                };
+            } else if (row.type === 'totals') {
+                const { totalCommitment, totalPayment } = row.data;
+                const totalText = `مجموع الالتزام = ${formatCurrencyForExcel(totalCommitment)} دج    |    مجموع الدفع = ${formatCurrencyForExcel(totalPayment)} دج`;
+                const addedRow = worksheet.addRow({ index: totalText });
+                
+                // Merge columns A to G
+                worksheet.mergeCells(addedRow.number, 1, addedRow.number, 7);
+                
+                addedRow.height = 22;
+                const cell = addedRow.getCell(1);
+                cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+                cell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FFF1F5F9' } // gray-100 equivalent
+                };
+                cell.alignment = { horizontal: 'right', vertical: 'middle' };
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+                    bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+                    left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+                    right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+                };
+            } else {
+                const piece = row.data;
+                const prefix = row.isChild ? '   ↳ ' : '';
+                const pieceName = prefix + piece.PIECE;
+
+                // Handle status text
+                const statusArr: string[] = [];
+                if (piece.hasEngagement) statusArr.push('ملتزم');
+                if (piece.hasPaiement) statusArr.push('مسدد');
+                const statusText = statusArr.join(' / ');
+                
+                const natureText = piece.isContextOnly ? `${piece.NAT_PIECE} (مرجع)` : piece.NAT_PIECE;
+
+                const addedRow = worksheet.addRow({
+                    index: row.index! + 1,
+                    document: pieceName,
+                    nature: natureText,
+                    status: statusText,
+                    structure: piece.rubricName || '---',
+                    beneficiary: piece.beneficiaryName || '---',
+                    amount: piece.MONTANT_PIECE
+                });
+
+                addedRow.height = 20;
+
+                // Loop cells to apply cell styling/formatting
+                addedRow.eachCell((cell, colNumber) => {
+                    cell.font = { name: 'Arial', size: 9 };
+                    cell.border = {
+                        top: { style: 'thin', color: { argb: 'FFF1F5F9' } },
+                        bottom: { style: 'thin', color: { argb: 'FFF1F5F9' } },
+                        left: { style: 'thin', color: { argb: 'FFF1F5F9' } },
+                        right: { style: 'thin', color: { argb: 'FFF1F5F9' } }
+                    };
+
+                    // Alignment by column
+                    if (colNumber === 1) { // Index
+                        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                        cell.font = { name: 'Arial', size: 8, color: { argb: 'FF94A3B8' } };
+                    } else if (colNumber === 2) { // Document
+                        cell.alignment = { horizontal: 'right', vertical: 'middle' };
+                        if (row.isChild) {
+                            cell.font = { name: 'Arial', size: 9, italic: true, color: { argb: 'FF475569' } };
+                        }
+                    } else if (colNumber === 3) { // Nature
+                        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                        if (piece.NAT_PIECE === 'صفقة' || piece.NAT_PIECE === 'اتفاقية' || piece.NAT_PIECE === 'ملحق') {
+                            cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF2563EB' } }; // Blue-600
+                        } else if (piece.NAT_PIECE === 'وضعية الأشغال' || piece.NAT_PIECE === 'فاتورة') {
+                            cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF16A34A' } }; // Green-600
+                        }
+                    } else if (colNumber === 4) { // Status
+                        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                        cell.font = { name: 'Arial', size: 8, bold: true };
+                        if (piece.hasEngagement && piece.hasPaiement) { cell.font.color = { argb: 'FF0D9488' }; } // Teal
+                        else if (piece.hasEngagement) { cell.font.color = { argb: 'FF2563EB' }; } // Blue
+                        else if (piece.hasPaiement) { cell.font.color = { argb: 'FF16A34A' }; } // Green
+                    } else if (colNumber === 5) { // Structure
+                        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                    } else if (colNumber === 6) { // Beneficiary
+                        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                    } else if (colNumber === 7) { // Amount
+                        cell.alignment = { horizontal: 'right', vertical: 'middle' };
+                        cell.numFmt = '#,##0.00';
+                        cell.font = { name: 'Arial', size: 9, bold: true };
+                    }
+                });
+            }
+        }
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `جدول_الوثائق_${new Date().toISOString().split('T')[0]}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                showToast('جاري استيراد البيانات...', 'loading');
+                const buffer = e.target?.result as ArrayBuffer;
+                const workbook = new ExcelJS.Workbook();
+                await workbook.xlsx.load(buffer);
+                
+                const worksheet = workbook.getWorksheet(1);
+                if (!worksheet) {
+                    showToast("الملف فارغ أو بصيغة غير صحيحة", 'error');
+                    return;
+                }
+
+                const json: any[] = [];
+                const headers: string[] = [];
+                
+                worksheet.getRow(1).eachCell((cell, colNumber) => {
+                    headers[colNumber] = String(cell.value || '');
+                });
+
+                worksheet.eachRow((row, rowNumber) => {
+                    if (rowNumber === 1) return;
+                    const rowData: any = {};
+                    row.eachCell((cell, colNumber) => {
+                        const header = headers[colNumber];
+                        if (header) {
+                            rowData[header] = cell.value;
+                        }
+                    });
+                    json.push(rowData);
+                });
+
+                if (json.length === 0) {
+                    showToast("الملف فارغ أو بصيغة غير صحيحة", 'error');
+                    return;
+                }
+
+                let successCount = 0;
+                let skippedCount = 0;
+                let errorCount = 0;
+                const errors: string[] = [];
+                const skipped: string[] = [];
+                
+                // Track pieces created during THIS loop to allow referencing them immediately
+                const createdPiecesInBatch: Piece[] = [];
+
+                await runInTransaction(async () => {
+                    for (const [index, row] of (json as any[]).entries()) {
+                        try {
+                            const n_operation = row['رقم العملية']?.trim();
+                            const piece_text = row['موضوع الوثيقة']?.trim();
+                            const nat_piece = row['طبيعة الوثيقة']?.trim();
+                            const linked_piece_name = row['الوثيقة المرتبط بها']?.trim();
+                            const montant_str = String(row['المبلغ'] || '0').replace(',', '.');
+                            const montant = parseFloat(montant_str);
+
+                            if (!n_operation || !piece_text || !nat_piece || isNaN(montant)) {
+                                errors.push(`السطر ${index + 2}: الحقول الأساسية (رقم العملية، موضوع، طبيعة، مبلغ) مفقودة أو غير صالحة.`);
+                                errorCount++; continue;
+                            }
+
+                            const operation = db.T_OPERATION.find(op => op.N_OPERATION === n_operation);
+                            if (!operation) {
+                                errors.push(`السطر ${index + 2}: لم يتم العثور على العملية بالرقم '${n_operation}'.`);
+                                errorCount++; continue;
+                            }
+                            
+                            if (!isOperationCreator(operation.CREATED_BY, currentUser) && currentUser.ROLE !== 'admin') {
+                                errors.push(`السطر ${index + 2}: ليس لديك صلاحية إضافة وثائق للعملية '${n_operation}'.`);
+                                errorCount++; continue;
+                            }
+
+                            const id_operation = operation.ID_OPERATION;
+
+                            // 1. Resolve id_piece_init FIRST to enable more granular duplicate checking
+                            let id_piece_init: number | null = null;
+                            if (linked_piece_name) {
+                                // Search in current DB
+                                let parentPiece = db.T_PIECE.find(p => p.ID_OPERATION === id_operation && p.PIECE.trim().toLowerCase() === linked_piece_name.toLowerCase());
+                                
+                                // Search in pieces added in THIS loop (important if contract and addendum are in same file)
+                                if (!parentPiece) {
+                                    parentPiece = createdPiecesInBatch.find(p => p.ID_OPERATION === id_operation && p.PIECE.trim().toLowerCase() === linked_piece_name.toLowerCase());
+                                }
+
+                                if (parentPiece) {
+                                    id_piece_init = parentPiece.ID_PIECE;
+                                }
+                            }
+
+                            // 2. Perform duplicate check scoped to (Operation + Text + Parent Link)
+                            // This allows same text "وضعية أشغال 01" for different contracts in same operation
+                            const checkDuplicate = (p: Piece) => 
+                                p.ID_OPERATION === id_operation && 
+                                p.PIECE.trim().toLowerCase() === piece_text.toLowerCase() &&
+                                p.ID_PIECE_INIT === id_piece_init;
+
+                            const existingInDB = db.T_PIECE.find(checkDuplicate);
+                            const existingInBatch = createdPiecesInBatch.find(checkDuplicate);
+                            
+                            if (existingInDB || existingInBatch) {
+                                skipped.push(`السطر ${index + 2}: الوثيقة "${piece_text}" موجودة بالفعل لهذا الارتباط. تم تخطيها.`);
+                                skippedCount++; continue;
+                            }
+
+                            let id_beneficiaire: number | null = null;
+                            let id_compte: number | null = null;
+                            if (row['المستفيد'] && nat_piece !== 'مقرر') {
+                                const beneficiaire = db.T_BENEFICIAIRE.find(b => b.BENEFICIAIRE.trim().toLowerCase() === String(row['المستفيد']).trim().toLowerCase());
+                                if (!beneficiaire) {
+                                    errors.push(`السطر ${index + 2}: لم يتم العثور على المستفيد '${row['المستفيد']}'.`);
+                                    errorCount++; continue;
+                                }
+                                id_beneficiaire = beneficiaire.ID_BENEFICIAIRE;
+
+                                if (row['رقم الحساب']) {
+                                    const compte = db.T_COMPTE_BANCAIRE.find(acc => acc.ID_BENEFICIAIRE === id_beneficiaire && acc.RIB === String(row['رقم الحساب']).trim());
+                                    if (!compte) {
+                                        errors.push(`السطر ${index + 2}: لم يتم العثور على الحساب البنكي '${row['رقم الحساب']}' للمستفيد.`);
+                                        errorCount++; continue;
+                                    }
+                                    id_compte = compte.ID_COMPTE;
+                                } else if (db.T_COMPTE_BANCAIRE.some(acc => acc.ID_BENEFICIAIRE === id_beneficiaire)) {
+                                    errors.push(`السطر ${index + 2}: رقم الحساب مطلوب للمستفيد '${beneficiaire.BENEFICIAIRE}'.`);
+                                    errorCount++; continue;
+                                }
+                            }
+                            
+                            let id_scat: number | null = null;
+                            if (row['رمز الصنف الفرعي']) {
+                                const scategorie = db.T_SCATEGORIE.find(sc => sc.C_SCATEGORIE === String(row['رمز الصنف الفرعي']).trim());
+                                if (!scategorie) {
+                                    errors.push(`السطر ${index + 2}: لم يتم العثور على الصنف الفرعي بالرمز '${row['رمز الصنف الفرعي']}'.`);
+                                    errorCount++; continue;
+                                }
+                                id_scat = scategorie.ID_SCATEGORIE;
+                            } else {
+                                errors.push(`السطر ${index + 2}: رمز الصنف الفرعي مطلوب.`);
+                                errorCount++; continue;
+                            }
+                            
+                            let id_rubrique: number | null = null;
+                            if (row['تفصيل الهيكلة']) {
+                                const rubrique = db.T_RUBRIQUE.find(r => r.RUBRIQUE === row['تفصيل الهيكلة'].trim());
+                                if (!rubrique) {
+                                    errors.push(`السطر ${index + 2}: لم يتم العثور على هيكل الكلفة '${row['تفصيل الهيكلة']}'.`);
+                                    errorCount++; continue;
+                                }
+                                id_rubrique = rubrique.ID_RUBRIQUE;
+                            }
+                            
+                            let saiEng = false, saiPai = false;
+                            const engTypes = ["مقرر", "اتفاقية", "صفقة", "ملحق", "فاتورة", "قرار", "مستخرج","حكم قضائي"];
+                            const paiTypes = ["وضعية الأشغال","وضعية التسبيق الجزافي", "وضعية التسبيق على التموين"];
+                            if (engTypes.includes(nat_piece)) saiEng = true;
+                            else if (paiTypes.includes(nat_piece)) saiPai = true;
+
+                            const newPiece = await addItem('T_PIECE', {
+                                NAT_PIECE: nat_piece, ID_OPERATION: id_operation, PIECE: piece_text,
+                                ID_BENEFICIAIRE: id_beneficiaire, ID_COMPTE: id_compte, MONTANT_PIECE: montant,
+                                ID_SCATEGORIE: id_scat, ID_RUBRIQUE: id_rubrique,
+                                DELAI_EX_JOURS: row['مدة الإنجاز (بالأيام)'] || null,
+                                ID_PIECE_INIT: id_piece_init, N_VISA_CM: null, DATE_VISA_CM: null,
+                                SAI_ENG: saiEng, SAI_PAI: saiPai
+                            });
+                            
+                            if (newPiece) {
+                                createdPiecesInBatch.push(newPiece);
+                                successCount++;
+                            }
+
+                        } catch (innerError) {
+                            console.error("Error processing row:", row, innerError);
+                            errors.push(`السطر ${index + 2}: خطأ غير متوقع أثناء المعالجة.`);
+                            errorCount++;
+                        }
+                    }
+                });
+
+                let summaryMessage = `اكتمل الاستيراد.\n\n- تمت إضافة ${successCount} وثائق بنجاح.\n- تم تخطي ${skippedCount} وثائق لأنها موجودة بالفعل.\n- فشلت معالجة ${errorCount} من السجلات.`;
+                const details = [...skipped, ...errors];
+                if (details.length > 0) {
+                    summaryMessage += "\n\nالتفاصيل:\n" + details.slice(0, 10).join('\n');
+                    if (details.length > 10) summaryMessage += `\n... و ${details.length - 10} ملاحظات أخرى.`
+                }
+                
+                if (successCount > 0) showToast(`تم استيراد ${successCount} وثائق`, 'success');
+                else if (errorCount > 0) showToast('فشل الاستيراد، راجع التفاصيل', 'error');
+
+                alert(summaryMessage);
+
+            } catch {
+                alert('فشل استيراد البيانات. يرجى التحقق من أن الملف بصيغة Excel صحيحة وأن الأعمدة مطابقة للنموذج المطلوب.');
+            } finally {
+                if (event.target) event.target.value = '';
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+
+    const handleNavigateToDoc = useCallback((type: 'ENG' | 'PAI', p: any) => {
+        if (type === 'ENG') {
+            const engId = db.T_ENGAGEMENT.find(eng => eng.ID_PIECE === p.ID_PIECE)?.ID_ENGAGEMENT;
+            if (engId) navigate('OPERATION_DETAILS', p.ID_OPERATION, `ENGAGEMENTS:${engId}:blue`);
+        } else {
+            const paiId = db.T_PAIEMENT.find(pai => pai.ID_PIECE === p.ID_PIECE)?.ID_PAIEMENT;
+            if (paiId) navigate('OPERATION_DETAILS', p.ID_OPERATION, `PAIEMENTS:${paiId}:blue`);
+        }
+    }, [db.T_ENGAGEMENT, db.T_PAIEMENT, navigate]);
+
+    const handleActionOnDoc = useCallback((type: 'ENG' | 'PAI', id: number) => {
+        setModalState({ type: type === 'ENG' ? 'ENGAGEMENT' : 'PAIEMENT', data: { defaultPieceId: id }, timestamp: Date.now() });
+    }, []);
+
+    const handleNavigateBeneficiary = useCallback((id: number) => navigate('BENEFICIARIES', id), [navigate]);
+    const handleNavigateDetails = useCallback((pieceId: number) => {
+        navigate('DOCUMENT_DETAILS', pieceId);
+    }, [navigate]);
+    const handleNavigateStructure = useCallback((rubricId: number, pieceOpId?: number) => {
+        const opId = pieceOpId || (selectedPiece ? selectedPiece.ID_OPERATION : 0);
+        if (!opId) return;
+       
+        navigate('FINANCIAL_STATUS_BY_STRUCTURE', opId, String(rubricId));
+    }, [navigate, selectedPiece]);
+
+    const handleEditPiece = useCallback((pieceToEdit: any) => {
+        if (loading) { alert("يجب الانتظار حتى يتم تحديث النافذة"); return; }
+        if (checkPermission(pieceToEdit.ID_OPERATION)) {
+            setModalState({ type: 'DOCUMENT', data: pieceToEdit, timestamp: Date.now() });
+        } else {
+            alert('ليس لديك صلاحية التعديل.');
+        }
+    }, [loading, checkPermission]);
+
+    const handleDeletePiece = useCallback((pieceToDelete: any) => {
+        if (loading) { alert("يجب الانتظار حتى يتم تحديث النافذة"); return; }
+        if (!checkPermission(pieceToDelete.ID_OPERATION)) {
+            alert('ليس لديك صلاحية الحذف.');
+            return;
+        }
+        handleDelete('T_PIECE', pieceToDelete.ID_PIECE, 'ID_PIECE');
+    }, [loading, checkPermission, handleDelete]);
+
+    if (loading) return <div className="p-8 text-center">{t('loading')}</div>;
+
+    return (
+        <PageWrapper title={t('page.documents')} navigate={navigate} onGoBack={onGoBack} currentUser={currentUser} breadcrumb={[]} actions={
+            <div className="flex items-center gap-2">
+                 <button onClick={handleExport} className="bg-teal-100 text-teal-600 px-2 py-0.5 border border-teal-200 rounded-[20px] shadow.md hover:bg-teal-300 transition-colors text-xs">
+                    <i className="bi bi-file-earmark-excel mr-1"></i> {t('btn.export_excel')}
+                 </button>
+                 {!isViewer && (
+                    <>
+                        <div className="h-5 w-px bg-gray-200 mx-1 self-center"></div>
+                        <button onClick={() => { if(loading) { alert("يجب الانتظار حتى يتم تحديث النافذة"); return; } setModalState({ type: 'DOCUMENT', timestamp: Date.now() }); }} className="bg-green-100 text-green-600 px-2 py-0.5 border border-green-200 rounded-[20px] shadow.md hover:bg-green-200 transition-colors text-xs cursor-pointer">
+                            <i className="bi bi-plus-circle mr-1"></i> {t('btn.add_document')}
+                        </button>
+                    </>
+                 )}
+            </div>
+        }>
+            <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".xlsx, .xls" />
+            
+            {connectionError && (
+                <div className="bg-red-50 border-r-4 border-red-500 p-3 mb-3 rounded shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 text-xs">
+                    <div className="flex items-center gap-2 col-span-1">
+                        <i className="bi bi-exclamation-triangle-fill text-red-500 text-lg"></i>
+                        <div className="text-right">
+                            <p className="font-bold text-red-800">فشل الاتصال بـ Supabase: تأكّد من اتصال الإنترنت أو إعدادات قاعدة البيانات</p>
+                            <p className="text-red-600 mt-0.5">{connectionError}</p>
+                        </div>
+                    </div>
+                    <button 
+                        onClick={handleRetry}
+                        disabled={isRetrying}
+                        className="bg-red-600 hover:bg-red-700 text-white font-bold px-3 py-1.5 rounded-[20px] shadow transition-colors flex items-center gap-1.5 cursor-pointer disabled:bg-gray-400"
+                    >
+                        <i className={`bi bi-arrow-clockwise ${isRetrying ? "animate-spin" : ""}`}></i>
+                        <span>إعادة المحاولة (Retry)</span>
+                    </button>
+                </div>
+            )}
+
+            {integrityIssues && (integrityIssues.brokenPieces.length > 0 || integrityIssues.brokenEngagements.length > 0 || integrityIssues.brokenPaiements.length > 0) && (
+                <div id="integrity-warning-banner" className="bg-amber-50 border border-amber-300 p-4 mb-3 rounded-lg shadow-md text-xs">
+                    <div className="flex items-start gap-3">
+                        <i className="bi bi-exclamation-octagon-fill text-amber-600 text-2xl mt-0.5 animate-pulse"></i>
+                        <div className="text-right flex-1">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-amber-200 pb-2 mb-2">
+                                <span className="font-bold text-amber-900 text-sm">تنبيه بالسلامة المرجعية (Foreign Key Broken): تم كشف علاقات مكسورة بالبيانات</span>
+                                {integrityIssues.brokenEngagements.length > 0 && (
+                                    <button
+                                        onClick={handleCleanAllOrphanedEngagements}
+                                        disabled={isDeleting}
+                                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1 pb-1.5 rounded-[20px] shadow transition-colors text-xs flex items-center gap-1 cursor-pointer disabled:bg-gray-400"
+                                    >
+                                        <i className="bi bi-trash-fill"></i>
+                                        <span>حذف كافة الالتزامات اليتامى ({integrityIssues.brokenEngagements.length}) دفعة واحدة</span>
+                                    </button>
+                                )}
+                            </div>
+                            
+                            <div className="text-amber-800 space-y-2 leading-relaxed">
+                                {integrityIssues.brokenPieces.length > 0 && (
+                                    <div>
+                                        <p className="font-bold mb-1">🛡️ الوثائق اليتامى (ترتبط بعملية/صنف غير موجود): <strong>{integrityIssues.brokenPieces.length}</strong></p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
+                                            {integrityIssues.brokenPieces.map(bPiece => (
+                                                <div key={bPiece.id_piece} className="flex items-center justify-between gap-3 bg-white p-2 rounded border border-amber-200 text-xs shadow-sm">
+                                                    <span>وثيقة: <strong className="text-amber-950">{bPiece.piece.PIECE || '---'}</strong> - معرّف العملية المفقود: {bPiece.id_operation}</span>
+                                                    <button 
+                                                        onClick={() => handleCleanOrphanedItem('T_PIECE', bPiece.id_piece)}
+                                                        disabled={isDeleting}
+                                                        className="bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 font-bold py-1 px-2 rounded-full text-[10px] flex items-center gap-1 transition-colors cursor-pointer"
+                                                    >
+                                                        <i className="bi bi-trash-fill"></i>
+                                                        <span>حذف وإصلاح</span>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {integrityIssues.brokenEngagements.length > 0 && (
+                                    <div className="mt-3">
+                                        <p className="font-bold mb-1">💼 الالتزامات اليتامى (ترتبط بوثيقة غير موجودة): <strong>{integrityIssues.brokenEngagements.length}</strong></p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
+                                            {integrityIssues.brokenEngagements.map(bEng => (
+                                                <div key={bEng.id_engagement} className="flex items-center justify-between gap-3 bg-white p-2 rounded border border-amber-200 text-xs shadow-sm">
+                                                    <span>التزام رقم: <strong className="text-amber-950">{bEng.engagement.N_ENG || '---'}</strong> - معرّف الوثيقة المفقود (ID_PIECE): {bEng.id_piece}</span>
+                                                    <button 
+                                                        onClick={() => handleCleanOrphanedItem('T_ENGAGEMENT', bEng.id_engagement)}
+                                                        disabled={isDeleting}
+                                                        className="bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 font-bold py-1 px-2 rounded-full text-[10px] flex items-center gap-1 transition-colors cursor-pointer"
+                                                    >
+                                                        <i className="bi bi-trash-fill"></i>
+                                                        <span>حذف وإصلاح</span>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {integrityIssues.brokenPaiements.length > 0 && (
+                                    <div className="mt-3">
+                                        <p className="font-bold mb-1">💸 الدفوعات اليتامى (ترتبط بوثيقة/عملية غير موجودة): <strong>{integrityIssues.brokenPaiements.length}</strong></p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
+                                            {integrityIssues.brokenPaiements.map(bPay => (
+                                                <div key={bPay.id_paiement} className="flex items-center justify-between gap-3 bg-white p-2 rounded border border-amber-200 text-xs shadow-sm">
+                                                    <span>دفع رقم: <strong className="text-amber-950">{bPay.paiement.N_PAI || '---'}</strong> - معرّف الوثيقة المفقود (ID_PIECE): {bPay.id_piece}</span>
+                                                    <button 
+                                                        onClick={() => handleCleanOrphanedItem('T_PAIEMENT', bPay.id_paiement)}
+                                                        disabled={isDeleting}
+                                                        className="bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 font-bold py-1 px-2 rounded-full text-[10px] flex items-center gap-1 transition-colors cursor-pointer"
+                                                    >
+                                                        <i className="bi bi-trash-fill"></i>
+                                                        <span>حذف وإصلاح</span>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div className="bg-blue-200 p-2 rounded-lg shadow-md mb-2 border border-blue-300">
+                <div className="flex flex-col xl:flex-row gap-4">
+                    <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-4 items-end">
+                        <div className="col-span-6 text-xs text-center">
+                            <label className="flex items-center text-xs text-center font-bold text-gray-700 mb-1">
+                                {t('filter.operation')} 
+                            </label>
+                            <CustomDropdown
+                                options={[{ value: '', label: t('filter.all_operations') }, ...operationOptions]}
+                                value={selectedOperationId}
+                                onChange={(val) => { setSelectedOperationId(val); setSelectedPiece(null); setSelectedStructureDetail(''); }}
+                                placeholder={t('filter.select_operation')}
+                            />
+                        </div>
+                    </div>
+                    <div className="flex-none flex items-center justify-between xl:justify-end gap-4 min-w-[120px]">
+                         <div className="bg-white rounded-[20px] shadow-sm border border-blue-300 flex flex-col items-center w-11 sm:w-auto min-w-[100px] px-2 h-9 justify-center">
+                            <span className="text-[8px] text-gray-500 font-bold whitespace-nowrap">عدد الوثائق</span>
+                            <span className="text-xs font-black text-blue-700">{displayPieces.length}</span>
+                         </div>
+                         {selectedOperationId && remainingCPForSelectedOp !== null && (
+                            <div className="bg-white rounded-[20px] shadow-sm border border-blue-300 flex flex-col items-center w-11 sm:w-auto min-w-[120px] px-2 h-9 justify-center">
+                                <span className="text-[8px] text-gray-500 font-bold whitespace-nowrap">الإعتمادات المتبقية (CP)</span>
+                                <span className="text-[10px] font-black text-green-700">{formatCurrency(remainingCPForSelectedOp)}</span>
+                            </div>
+                         )}
+                         {selectedOperationId && remainingAEForSelectedOp !== null && (
+                            <div className="bg-white rounded-[20px] shadow-sm border border-blue-300 flex flex-col items-center w-11 sm:w-auto min-w-[120px] px-2 h-9 justify-center">
+                                <span className="text-[8px] text-gray-500 font-bold whitespace-nowrap">رخصة AE المتبقية</span>
+                                <span className="text-[10px] font-black text-indigo-700">{formatCurrency(remainingAEForSelectedOp)}</span>
+                            </div>
+                         )}
+                    </div>
+                </div>
+            </div>
+            
+            <div className="bg-white rounded-lg shadow-md overflow-hidden">
+                <div className="overflow-auto max-h-[68vh]">
+                    <table className="w-full text-left text-xs">
+                        <thead className="bg-sky-100 sticky top-0 z-10 border-b shadow-sm">
+                            <tr>
+                                <th className="p-1 text-center text-[8px] font-bold text-gray-500 uppercase tracking-wider w-8">#</th>
+                                <th className="p-1 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                                    <SearchHeader 
+                                        title={t('col.document')}
+                                        isActive={!!searchPieceName}
+                                        tooltip="بحث بالاسم"
+                                    >
+                                        <div className="relative">
+                                             <input
+                                                type="text"
+                                                className="w-full h-5 px-1 bg-white border border-blue-200 rounded text-[8px] font-medium normal-case outline-none"
+                                                value={searchPieceName}
+                                                onChange={(e) => setSearchPieceName(e.target.value)}
+                                                autoFocus
+                                                placeholder="..."
+                                            />
+                                            {searchPieceName && (
+                                                <button onClick={() => setSearchPieceName('')} className="absolute left-0.5 top-0.5 text-gray-400 hover:text-red-500">
+                                                    <X size={8} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </SearchHeader>
+                                </th>
+                                <th className="p-1 text-center text-[9px] font-bold text-gray-500 uppercase tracking-wider">
+                                    <SearchHeader 
+                                        title="الطبيعة"
+                                        isActive={!!selectedPieceType}
+                                        tooltip="تصفية الطبيعة"
+                                    >
+                                        <div className="relative">
+                                            <select
+                                                className="w-full h-5 px-1 bg-white border border-blue-200 rounded text-[8px] font-bold outline-none"
+                                                value={selectedPieceType}
+                                                onChange={(e) => setSelectedPieceType(e.target.value)}
+                                            >
+                                                <option value="">الكل</option>
+                                                {uniquePieceTypes.map(type => (
+                                                    <option key={type} value={type}>{type}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </SearchHeader>
+                                </th>
+                                <th className="p-1 text-center text-[9px] font-bold text-gray-500 uppercase tracking-wider w-24">
+                                    <SearchHeader 
+                                        title="الحالة"
+                                        isActive={!!selectedSaiEng || !!selectedSaiPai}
+                                        tooltip="تصفية الحالة"
+                                    >
+                                        <div className="flex flex-col gap-1 p-1 bg-white border border-blue-200 rounded-[20px] shadow-sm">
+                                            <select
+                                                className="w-full h-5 px-1 bg-white border border-gray-200 rounded-[20px] text-[8px] outline-none"
+                                                value={selectedSaiEng}
+                                                onChange={(e) => setSelectedSaiEng(e.target.value)}
+                                            >
+                                                <option value="">(الالتزام) الكل</option>
+                                                <option value="true">مسجل للالتزام</option>
+                                                <option value="false">غير مسجل للالتزام</option>
+                                            </select>
+                                            <select
+                                                className="w-full h-5 px-1 bg-white border border-gray-200 rounded-[20px] text-[8px] outline-none"
+                                                value={selectedSaiPai}
+                                                onChange={(e) => setSelectedSaiPai(e.target.value)}
+                                            >
+                                                <option value="">(الدفع) الكل</option>
+                                                <option value="true">مسجل للدفع</option>
+                                                <option value="false">غير مسجل للدفع</option>
+                                            </select>
+                                        </div>
+                                    </SearchHeader>
+                                </th>
+                                <th className="p-1 text-center text-[9px] font-bold text-gray-500 uppercase tracking-wider">
+                                    <SearchHeader 
+                                        title="تفصيل الهيكلة"
+                                        isActive={!!selectedStructureDetail}
+                                        tooltip="تصفية الهيكلة"
+                                    >
+                                        <div className="relative">
+                                            <select
+                                                className="w-full h-5 px-1 bg-white border border-blue-200 rounded text-[8px] font-bold outline-none"
+                                                value={selectedStructureDetail}
+                                                onChange={(e) => setSelectedStructureDetail(e.target.value)}
+                                            >
+                                                <option value="">الكل</option>
+                                                {uniqueRubrics.map(rub => (
+                                                    <option key={rub.ID_RUBRIQUE} value={String(rub.ID_RUBRIQUE)}>{rub.RUBRIQUE}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </SearchHeader>
+                                </th>
+                                <th className="p-1 text-center text-[9px] font-bold text-gray-500 uppercase tracking-wider">
+                                    <SearchHeader 
+                                        title={t('col.beneficiary')}
+                                        isActive={!!selectedBeneficiaireId}
+                                        tooltip="بحث بالمستفيذ"
+                                    >
+                                        <div className="relative">
+                                            <input
+                                                type="text"
+                                                className="w-full h-5 px-1 bg-white border border-blue-200 rounded text-[9px] font-medium normal-case outline-none"
+                                                value={selectedBeneficiaireId}
+                                                onChange={(e) => setSelectedBeneficiaireId(e.target.value)}
+                                                autoFocus
+                                                placeholder="..."
+                                            />
+                                            {selectedBeneficiaireId && (
+                                                <button onClick={() => setSelectedBeneficiaireId('')} className="absolute left-0.5 top-0.5 text-gray-400 hover:text-red-500">
+                                                    <X size={8} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </SearchHeader>
+                                </th>
+                                <th className="p-1 text-right text-[9px] font-bold text-gray-500 uppercase tracking-wider">{t('col.amount')}</th>
+                                <th className="p-1 text-center text-[9px] font-bold text-gray-500 uppercase tracking-wider w-16">إجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                            {paginatedRows.map((row) => {
+                                if (row.type === 'operation') {
+                                    const opt = row.data;
+                                    return (
+                                        <tr key={row.key} className="bg-gradient-to-l from-blue-50 to-transparent text-right border-y border-blue-100/60 font-black">
+                                            <td colSpan={8} className="p-1.5 text-right">
+                                                <div className="flex items-center gap-2 justify-start leading-none pr-1">
+                                                    <span className="bg-sky-300 text-black text-[8px] px-1.5 py-0.5 rounded-[20px] shadow-sm select-none">
+                                                     {opt?.N_OPERATION}
+                                                    </span>
+                                                    <span className="text-[8px] font-black text-blue-900 truncate max-w-[600px]" title={opt?.INT_OPERATION}>
+                                                        {opt?.INT_OPERATION}
+                                                    </span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                } else if (row.type === 'totals') {
+                                    const { totalCommitment, totalPayment } = row.data;
+                                    return (
+                                        <React.Fragment key={row.key}>
+                                            <tr className="bg-gray-100 text-black-600">
+                                                <td colSpan={8} className="p-1 text-right text-[9px] border border-black-200">
+                                                    <div className="flex items-center gap-1.5 justify-end">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-sm"></span>
+                                                        <span className="px-1 rounded-[20px] bg-blue-50 border border-blue-200"> مجموع الالتزام = {formatCurrency(totalCommitment)} </span>
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-sm"></span>
+                                                        <span className="px-1 rounded-[20px] bg-green-50 border border-green-200"> مجموع الدفع  = {formatCurrency(totalPayment)} </span>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </React.Fragment>
+                                    );
+                                } else {
+                                    const piece = row.data;
+                                    return (
+                                        <DocumentRow 
+                                            key={row.key}
+                                            piece={piece}
+                                            index={row.index!}
+                                            isSelected={selectedPiece?.ID_PIECE === piece.ID_PIECE}
+                                            isHighlighted={highlightId === piece.ID_PIECE}
+                                            highlightColor={highlightColor}
+                                            onSelect={handleSelectPiece}
+                                            onNavigate={handleNavigateToDoc}
+                                            onAction={handleActionOnDoc}
+                                            onNavigateBeneficiary={handleNavigateBeneficiary}
+                                            onNavigateStructure={handleNavigateStructure}
+                                            onNavigateDetails={handleNavigateDetails}
+                                            onEdit={handleEditPiece}
+                                            onDelete={handleDeletePiece}
+                                            isConcernedWithEngagement={() => piece.isConcernedEng}
+                                            isConcernedWithPaiement={() => piece.isConcernedPai}
+                                            isViewer={isViewer}
+                                            isChild={row.isChild}
+                                        />
+                                    );
+                                }
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+                {renderPaginationControls()}
+            </div>
+
+            <Modal isOpen={modalState.type === 'DOCUMENT'} onClose={() => setModalState({ type: null })} title={modalState.data ? "تعديل وثيقة" : "إضافة وثيقة جديدة"} maxWidth="2xl">
+                <AddDocumentForm
+                    key={modalState.timestamp ? `doc-${modalState.timestamp}` : 'add-doc'}
+                    onClose={() => setModalState({ type: null })}
+                    onSave={(data) => handleSave('T_PIECE', data, 'ID_PIECE')}
+                    operations={db.T_OPERATION.filter(op => isOperationCreator(op.CREATED_BY, currentUser) || currentUser.ROLE === 'admin')}
+                    beneficiaires={db.T_BENEFICIAIRE}
+                    comptesBancaires={db.T_COMPTE_BANCAIRE}
+                    pieces={db.T_PIECE}
+                    engagements={db.T_ENGAGEMENT}
+                    paiements={db.T_PAIEMENT}
+                    cps={db.T_CP}
+                    rubriques={db.T_RUBRIQUE}
+                    rubriqueOps={db.T_RUBRIQUE_OP}
+                    scategories={db.T_SCATEGORIE}
+                    scategorieOps={db.T_SCATEGORIE_OP}
+                    initialData={modalState.data}
+                    lots={db.T_LOT_OPERATION}
+                    lotPieces={db.T_LOT_PIECE}
+                    ods={db.T_ODS}
+                    selectedOperationId={selectedOperationId ? parseInt(selectedOperationId) : null}
+                />
+            </Modal>
+            <Modal isOpen={modalState.type === 'LOT_PIECE'} onClose={() => setModalState({ type: null })} title="ربط حصة">
+                {selectedPiece && (
+                    <AddLotPieceForm
+                        key={modalState.timestamp ? `lot-piece-${modalState.timestamp}` : 'add-lot-piece'}
+                        onClose={() => setModalState({ type: null })}
+                        onSave={handleSaveLotPiece}
+                        pieceId={selectedPiece.ID_PIECE}
+                        allLotsForOperation={allLotsForOperation}
+                        alreadyAssociatedLotIds={alreadyAssociatedLotIds}
+                        initialData={modalState.data}
+                    />
+                )}
+            </Modal>
+            <Modal isOpen={modalState.type === 'ODS'} onClose={() => setModalState({ type: null })} title={modalState.data ? "تعديل أمر خدمة" : "إضافة أمر خدمة"}>
+                {selectedPiece && (
+                    <AddOdsForm
+                        key={modalState.timestamp ? `ods-${modalState.timestamp}` : 'add-ods'}
+                        onClose={() => setModalState({ type: null })}
+                        onSave={(data) => handleSave('T_ODS', data, 'ID_ODS')}
+                        pieceId={selectedPiece.ID_PIECE}
+                        initialData={modalState.data}
+                        associatedOds={associatedOds}
+                        associatedLots={associatedLotObjects}
+                    />
+                )}
+            </Modal>
+            
+            {/* New Modals for Immediate Engagement/Payment */}
+            <Modal isOpen={modalState.type === 'ENGAGEMENT'} onClose={() => setModalState({ type: null })} title="إضافة التزام للوثيقة">
+                {dataForEngagementForm && (
+                    <AddEngagementForm
+                        key={`add-eng-direct-${modalState.timestamp}`}
+                        onClose={() => setModalState({ type: null })}
+                        onSave={(data) => handleSave('T_ENGAGEMENT', data, 'ID_ENGAGEMENT')}
+                        operationId={dataForEngagementForm.opId}
+                        pieces={dataForEngagementForm.pieces}
+                        rubriqueOps={dataForEngagementForm.rubriqueOps}
+                        allEngagementsForOp={dataForEngagementForm.engagements}
+                        selectedYear={new Date().getFullYear().toString()}
+                        defaultPieceId={modalState.data.defaultPieceId}
+                    />
+                )}
+            </Modal>
+            
+            <Modal isOpen={modalState.type === 'PAIEMENT'} onClose={() => setModalState({ type: null })} title="إضافة دفع للوثيقة">
+                {dataForPaiementForm && (
+                    <AddPaiementForm
+                        key={`add-pai-direct-${modalState.timestamp}`}
+                        onClose={() => setModalState({ type: null })}
+                        onSave={(data) => handleSave('T_PAIEMENT', data, 'ID_PAIEMENT')}
+                        operationId={dataForPaiementForm.opId}
+                        engagements={dataForPaiementForm.engagements}
+                        pieces={dataForPaiementForm.pieces}
+                        cpItems={db.T_CP}
+                        allPaiementsForOp={dataForPaiementForm.paiements}
+                        selectedYear={new Date().getFullYear().toString()}
+                        defaultPieceId={modalState.data.defaultPieceId}
+                    />
+                )}
+            </Modal>
+        </PageWrapper>
+    );
+};
+
+export default DocumentsPage;

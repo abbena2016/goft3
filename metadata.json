@@ -1,0 +1,10 @@
+{
+  "name": "Remix Remix GOFT3-109",
+  "description": "A professional application for managing the financial operations of investment expenditures. Compatible with Windows and Linux, featuring an Arabic-first, offline-capable interface.",
+  "requestFramePermissions": [],
+  "D7": [],
+  "aq": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

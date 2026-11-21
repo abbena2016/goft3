@@ -1,0 +1,25 @@
+[package]
+name = "goft3"
+version = "1.2.0"
+description = "GOFT3 - Gestion des Opérations Financières Titre 3 (نظام تسيير نفقات الاستثمار)"
+authors = ["Abdelatif Benketira <abbena2016@gmail.com>"]
+license = "MIT"
+repository = ""
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
